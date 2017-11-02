@@ -359,7 +359,10 @@ struct port_info
     struct led_s *led_tx;
     struct led_s *led_rx;
 };
-
+//SB--------------------------------------------------------------------
+int pc=-1;//Inilize point of communication flag
+int irq=-1;//Inilize request for communication flag
+//----------------------------------------------------------------------
 #define for_each_connection(port, netcon) \
     for (netcon = port->netcons;				\
 	 netcon < &(port->netcons[port->max_connections]);	\
@@ -766,9 +769,11 @@ handle_net_send_one(port_info_t *port, net_info_t *netcon)
 	    sel_set_fd_write_handler(ser2net_sel, netcon->fd,
 				     SEL_FD_HANDLER_ENABLED);
 	    port->dev_to_net_state = PORT_WAITING_OUTPUT_CLEAR;
-	} else if (port->close_on_output_done) {
-	    shutdown_one_netcon(netcon, "closeon sequence found");
-	}
+	} else{	
+		if (port->close_on_output_done) {
+			shutdown_one_netcon(netcon, "closeon sequence found");
+			}
+		}
     }
 
     reset_timer(netcon);
@@ -782,10 +787,14 @@ handle_net_send(port_info_t *port)
     for_each_connection(port, netcon) {
 	if (netcon->fd == -1)
 	    continue;
-	handle_net_send_one(port, netcon);
+	//SB----------------------------------------------------------------
+	if(netcon->fd == pc){handle_net_send_one(port, netcon);}
+	//only send serial reply to the point of cummunication session
+	//handle_net_send_one(port, netcon);--------------------------------
     }
-    if (!any_net_data_to_write(port))
-	port->dev_to_net.cursize = 0;
+    if (!any_net_data_to_write(port)){
+		port->dev_to_net.cursize = 0;
+	}
 }
 
 void
@@ -1040,6 +1049,24 @@ net_fd_read2(port_info_t *port, net_info_t *netcon, int count)
     port->net_to_dev.cursize = count;
 
     netcon->bytes_received += count;
+    
+	//SB ---------------------------------------------------------------
+	if(*(port->net_to_dev.buf)=='-'){//use - command to exit 
+		pc=-1;
+		return;
+	}
+	if(netcon->fd==irq){//Handle request for communication
+		pc=irq;
+		irq=-1;
+		}
+	if(*(port->net_to_dev.buf)=='+'){//use + command to request in
+		irq=netcon->fd;
+		return;
+	}
+	if(pc==-1){pc=netcon->fd;}//PC =-1 communication chanle open
+	if(netcon->fd!=pc||irq>-1){return;}//Stop handle non-pc command
+	
+	//------------------------------------------------------------------
 
     if (port->enabled == PORT_TELNET) {
 	port->net_to_dev.cursize = process_telnet_data(port->net_to_dev.buf,
@@ -1120,7 +1147,6 @@ net_fd_read2(port_info_t *port, net_info_t *netcon, int count)
 	    port->net_to_dev_state = PORT_WAITING_OUTPUT_CLEAR;
 	}
     }
-
     reset_timer(netcon);
 }
 
@@ -3035,6 +3061,7 @@ netcon_finish_shutdown(net_info_t *netcon)
     }
 
     if (num_connected_net(port, true) == 0) {
+		pc=-1;//SB- Re-set pc flag after no connection------------------
 	start_shutdown_port(port, "All network connections free");
 	sel_run(port->runshutdown, shutdown_port_timer, port);
     } else {
